@@ -68,8 +68,13 @@ function showSettingsDialog() {
 
     var fontSizeGroup = fontGroup.add("group");
     fontSizeGroup.add("statictext", undefined, "Font Boyutu:");
-    var fontSizeInput = fontSizeGroup.add("edittext", undefined, "30");
+    var fontSizeInput = fontSizeGroup.add("edittext", undefined, "40");
     fontSizeInput.characters = 5;
+
+    var fontFamilyGroup = fontGroup.add("group");
+    fontFamilyGroup.add("statictext", undefined, "Font Ailesi:");
+    var fontFamilyInput = fontFamilyGroup.add("edittext", undefined, "ArialMT");
+    fontFamilyInput.characters = 20;
 
     var activeFontColorGroup = fontGroup.add("group");
     activeFontColorGroup.add("statictext", undefined, "Aktif Metin Rengi (R,G,B):");
@@ -100,7 +105,7 @@ function showSettingsDialog() {
 
     var maxCombineGapGroup = sentenceGroup.add("group");
     maxCombineGapGroup.add("statictext", undefined, "Maks. Birleştirme Aralığı (sn):");
-    var maxCombineGapInput = maxCombineGapGroup.add("edittext", undefined, "3.0");
+    var maxCombineGapInput = maxCombineGapGroup.add("edittext", undefined, "7.0");
     maxCombineGapInput.characters = 5;
 
     // Ekran ayarları
@@ -112,12 +117,12 @@ function showSettingsDialog() {
 
     var lineCountGroup = screenGroup.add("group");
     lineCountGroup.add("statictext", undefined, "Maksimum Satır Sayısı:");
-    var maxLinesInput = lineCountGroup.add("edittext", undefined, "17");
+    var maxLinesInput = lineCountGroup.add("edittext", undefined, "20");
     maxLinesInput.characters = 5;
 
     var minSilenceForNewPageGroup = screenGroup.add("group");
     minSilenceForNewPageGroup.add("statictext", undefined, "Yeni Sayfa İçin Min. Sessizlik (sn):");
-    var minSilenceForNewPageInput = minSilenceForNewPageGroup.add("edittext", undefined, "3.0");
+    var minSilenceForNewPageInput = minSilenceForNewPageGroup.add("edittext", undefined, "7.0");
     minSilenceForNewPageInput.characters = 5;
 
     var pageEndBufferTimeGroup = screenGroup.add("group");
@@ -144,7 +149,7 @@ function showSettingsDialog() {
 
     var xPosGroup = posGroup.add("group");
     xPosGroup.add("statictext", undefined, "X Pozisyonu (%):");
-    var xPosInput = posGroup.add("edittext", undefined, "10");
+    var xPosInput = posGroup.add("edittext", undefined, "5");
     xPosInput.characters = 5;
 
     var yPosGroup = posGroup.add("group");
@@ -163,6 +168,7 @@ function showSettingsDialog() {
     if (result == 1) {
         return {
             fontSize: parseInt(fontSizeInput.text),
+            fontFamily: fontFamilyInput.text,
             activeFontColor: parseColor(activeFontColorInput.text),
             inactiveFontColor: parseColor(inactiveFontColorInput.text),
             minChars: parseInt(minCharsInput.text),
@@ -271,8 +277,23 @@ function combineShortSentences(sentences, minChars, maxChars, maxCombineGap) {
             var shouldCombine = false;
             // Sadece zaman farkı kabul edilebilir bir aralıktaysa birleştirmeyi değerlendir.
             if (timeDiff < maxCombineGap) { // maxCombineGap kullanıcı ayarından gelecek
-                if (potentialCombinedLength <= maxChars) { // Ve maxChars'a uyuluyorsa
-                    if (currentSentence.length < minChars) { // Mevcut cümle çok kısaysa birleştir
+                
+                // YENİ: Satır başına maxChars kontrolü
+                var combinedTextForPerLineCheck = currentSentence.text + 
+                                                (currentSentence.text.length > 0 && sentence.text.length > 0 ? " " : "") + 
+                                                sentence.text;
+                var visualLines = combinedTextForPerLineCheck.split('\n');
+                var perLineMaxCharsOk = true;
+                for (var k = 0; k < visualLines.length; k++) {
+                    if (trimString(visualLines[k]).length > maxChars) {
+                        perLineMaxCharsOk = false;
+                        break;
+                    }
+                }
+
+                if (perLineMaxCharsOk) { // Eğer satır başına maxChars kuralı tamamsa, diğer koşullara bak
+                    // Eski koşullar: minChars'a ulaşmaya çalış VEYA çok yakınsa birleştir
+                    if (currentSentence.length < minChars) { // Mevcut cümle (toplamda) çok kısaysa birleştir
                         shouldCombine = true;
                     } else if (timeDiff < 0.5) { // Veya mevcut cümle yeterince uzunsa ama sonraki cümle çok yakınsa birleştir (0.5sn'den az farkla)
                         shouldCombine = true;
@@ -326,26 +347,42 @@ function createPageBasedTextDisplay(comp, sentences, settings) {
 
     while (currentSentenceIndex < sentences.length) {
         pageCounter++;
-        var pageSentences = [];
+        var pageSentences = []; // Bu AE sayfasındaki cümle bloklarını tutar
         var pageStartTime = -1;
-        var pageEndTime = -1;
+        var currentVisualLinesOnPage = 0; // Bu sayfadaki toplam görsel satır sayısı
 
-        // Bu sayfa için cümleleri topla
-        for (var i = 0; i < settings.maxLines && currentSentenceIndex < sentences.length; i++) {
-            var nextSentence = sentences[currentSentenceIndex];
-            if (pageSentences.length === 0) {
-                pageSentences.push(nextSentence);
-                pageStartTime = nextSentence.start;
+        // Bu sayfa için cümleleri topla (yeni görsel satır sayma mantığı ile)
+        for (var lineAttempt = 0; currentSentenceIndex < sentences.length; lineAttempt++) {
+            var sentenceToConsider = sentences[currentSentenceIndex];
+            var visualLinesInSentence = (sentenceToConsider.text.split('\n').length); // \n ile bölerek görsel satır sayısını bul
+
+            if (pageSentences.length === 0) { // Sayfadaki ilk cümle bloğu her zaman eklenir (başlangıçta)
+                pageSentences.push(sentenceToConsider);
+                pageStartTime = sentenceToConsider.start;
+                currentVisualLinesOnPage += visualLinesInSentence;
                 currentSentenceIndex++;
+                if (currentVisualLinesOnPage >= settings.maxLines) { // Eğer bu ilk cümle bile maxLines'ı dolduruyorsa
+                    break; // Bu sayfayı sonlandır
+                }
             } else {
+                // Sonraki cümle blokları için koşulları kontrol et
                 var lastSentenceOnPage = pageSentences[pageSentences.length - 1];
-                var gap = nextSentence.start - lastSentenceOnPage.end;
+                var gap = sentenceToConsider.start - lastSentenceOnPage.end;
+
                 if (gap >= settings.minSilenceForNewPage) {
-                    // Bu cümle yeni bir sayfa başlatmalı, mevcut döngüyü kır
-                    break; 
-                } else {
-                    pageSentences.push(nextSentence);
+                    break; // Sessizlik çok uzun, yeni sayfa başlatılmalı. Döngüyü kır.
+                }
+
+                // Görsel satır sayısı kontrolü
+                if (currentVisualLinesOnPage + visualLinesInSentence <= settings.maxLines) {
+                    pageSentences.push(sentenceToConsider);
+                    currentVisualLinesOnPage += visualLinesInSentence;
                     currentSentenceIndex++;
+                    if (currentVisualLinesOnPage >= settings.maxLines) { // Bu cümle ile maxLines dolduysa
+                        break; // Bu sayfayı sonlandır
+                    }
+                } else {
+                    break; // Bu cümle bloğu sayfaya sığmıyor (görsel satır olarak). Döngüyü kır.
                 }
             }
         }
@@ -356,7 +393,7 @@ function createPageBasedTextDisplay(comp, sentences, settings) {
         }
 
         // Sayfanın bitiş zamanını belirle
-        pageEndTime = pageSentences[pageSentences.length - 1].end + settings.pageEndBufferTime;
+        var pageEndTime = pageSentences[pageSentences.length - 1].end + settings.pageEndBufferTime;
         
         // Güvenlik: pageStartTime tanımsızsa veya hatalıysa düzelt (bu pek olası değil yeni mantıkla ama kalsın)
         if (pageStartTime === -1 && pageSentences.length > 0) {
@@ -395,6 +432,13 @@ function createPageBasedTextDisplay(comp, sentences, settings) {
         inactiveTextDoc.text = fullPageText;
 
         inactiveTextDoc.fontSize = settings.fontSize;
+        if (settings.fontFamily && settings.fontFamily.length > 0) { // Font ailesi belirtilmişse uygula
+            try { 
+                inactiveTextDoc.font = settings.fontFamily; 
+            } catch(e) { 
+                alert("İnaktif metin için font ayarlanamadı: '" + settings.fontFamily + "'.\nAfter Effects Hatası: " + e.toString() + "\nVarsayılan font kullanılacak.");
+            }
+        }
         var inactiveColorArray = [settings.inactiveFontColor[0]/255, settings.inactiveFontColor[1]/255, settings.inactiveFontColor[2]/255];
         inactiveTextDoc.fillColor = inactiveColorArray;
         inactiveTextDoc.leading = settings.fontSize * (settings.lineSpacing / 100);
@@ -424,6 +468,13 @@ function createPageBasedTextDisplay(comp, sentences, settings) {
         var activeTextDoc = activeTextProp.value;
         
         activeTextDoc.fontSize = settings.fontSize;
+        if (settings.fontFamily && settings.fontFamily.length > 0) { // Font ailesi belirtilmişse uygula
+            try { 
+                activeTextDoc.font = settings.fontFamily; 
+            } catch(e) { 
+                alert("Aktif metin için font ayarlanamadı: '" + settings.fontFamily + "'.\nAfter Effects Hatası: " + e.toString() + "\nVarsayılan font kullanılacak.");
+            }
+        }
         var activeColorArray = [settings.activeFontColor[0]/255, settings.activeFontColor[1]/255, settings.activeFontColor[2]/255];
         activeTextDoc.fillColor = activeColorArray;
         activeTextDoc.leading = settings.fontSize * (settings.lineSpacing / 100);
@@ -529,6 +580,7 @@ function createTextDisplayEffect() {
     try {
         // Dosyayı aç ve içeriği oku
         jsonFile.open("r");
+        jsonFile.encoding = "UTF-8"; // Dosya okuma için UTF-8 kodlamasını ayarla
         var jsonContent = jsonFile.read();
         jsonFile.close();
         
